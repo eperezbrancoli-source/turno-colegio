@@ -96,6 +96,10 @@
     .modal-label { font-size: 11px; font-weight: 600; color: #999; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
     .modal-input { width: 100%; padding: 11px 12px; border: 1px solid #E0E0D8; border-radius: 12px; font-size: 15px; color: #1A1A1A; background: #FAFAF8; margin-bottom: 1.1rem; outline: none; }
     .modal-input:focus { border-color: #1D9E75; }
+    .nino-picker { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 1.1rem; min-height: 44px; }
+    .nino-pick-btn { padding: 8px 14px; border-radius: 20px; border: 1.5px solid #E0E0D8; background: white; font-size: 14px; color: #555; cursor: pointer; transition: all 0.15s; }
+    .nino-pick-btn.selected { border-color: #1D9E75; background: #E8F8F2; color: #0F6E56; font-weight: 600; }
+    .nino-picker-empty { font-size: 13px; color: #AAA; padding: 8px 0; }
     .modal-options { display: flex; gap: 8px; margin-bottom: 1.5rem; }
     .modal-opt { flex: 1; padding: 10px 8px; border: 1.5px solid #E0E0D8; border-radius: 12px; cursor: pointer; text-align: center; font-size: 13px; color: #555; background: white; }
     .modal-opt.selected { border-color: #1D9E75; background: #E8F8F2; color: #0F6E56; font-weight: 600; }
@@ -142,8 +146,8 @@
     <div class="modal">
       <div class="modal-title">Agregar niño al turno</div>
       <div class="modal-sub" id="modal-sub"></div>
-      <div class="modal-label">Nombre del niño</div>
-      <input class="modal-input" id="modal-nombre" type="text" placeholder="Ej: Martina" oninput="updateConfirmBtn()" />
+      <div class="modal-label">Elige un niño</div>
+      <div class="nino-picker" id="nino-picker"></div>
       <div class="modal-label">¿Con qué frecuencia?</div>
       <div class="modal-options">
         <div class="modal-opt selected" id="opt-hoy" onclick="selectOpt('hoy')">Solo hoy</div>
@@ -151,7 +155,7 @@
       </div>
       <div class="modal-actions">
         <button class="modal-cancel" onclick="closeModal()">Cancelar</button>
-        <button class="modal-confirm" id="modal-confirm" onclick="confirmarAgregar()">Agregar</button>
+        <button class="modal-confirm" id="modal-confirm" onclick="confirmarAgregar()" disabled>Agregar</button>
       </div>
     </div>
   </div>
@@ -222,7 +226,7 @@ let firebaseData = {};
 let unsubscribe = null;
 
 // modal state
-let modalDia = null, modalHora = null, modalOpt = 'hoy';
+let modalDia = null, modalHora = null, modalOpt = 'hoy', modalNombreSeleccionado = null;
 
 function getTodayIndex() { const d = new Date().getDay(); return (d===0||d===6)?0:d-1; }
 function getMama(id) { return MAMAS.find(m=>m.id===id); }
@@ -484,14 +488,50 @@ function changeDay(dir) { currentDayIndex=(currentDayIndex+dir+5)%5; renderTab()
 // ── MODAL ─────────────────────────────────────────────
 function openModal(dia, hora) {
   modalDia = dia; modalHora = hora; modalOpt = 'hoy';
+  modalNombreSeleccionado = null;
   document.getElementById('modal-sub').textContent = `Turno ${hora} — ${dia}`;
-  document.getElementById('modal-nombre').value = '';
   document.getElementById('opt-hoy').classList.add('selected');
   document.getElementById('opt-siempre').classList.remove('selected');
   document.getElementById('modal-confirm').disabled = true;
+
+  // Obtener todos los niños del horario
+  const todosNinos = new Set();
+  Object.values(HORARIO).forEach(turnos => {
+    turnos.forEach(t => t.ninos.forEach(n => todosNinos.add(n.n)));
+  });
+
+  // Niños ya en este turno
+  const turno = (HORARIO[dia]||[]).find(t=>t.hora===hora);
+  const state = getState(dia, hora);
+  const ninosEnTurno = new Set([
+    ...(turno ? turno.ninos.map(n=>n.n) : []),
+    ...Object.keys(state.ninos_hoy||{}),
+    ...Object.keys(getNinosExtra(dia, hora))
+  ]);
+
+  // Niños disponibles = todos menos los que ya están
+  const disponibles = [...todosNinos].filter(n => !ninosEnTurno.has(n));
+
+  const picker = document.getElementById('nino-picker');
+  if (disponibles.length === 0) {
+    picker.innerHTML = '<span class="nino-picker-empty">Todos los niños ya están en este turno</span>';
+  } else {
+    picker.innerHTML = disponibles.map(n =>
+      `<button class="nino-pick-btn" onclick="selectNino('${n}')">${n}</button>`
+    ).join('');
+  }
+
   document.getElementById('modal-overlay').classList.add('active');
-  setTimeout(()=>document.getElementById('modal-nombre').focus(), 100);
 }
+
+function selectNino(nombre) {
+  modalNombreSeleccionado = nombre;
+  document.querySelectorAll('.nino-pick-btn').forEach(b => {
+    b.classList.toggle('selected', b.textContent === nombre);
+  });
+  document.getElementById('modal-confirm').disabled = false;
+}
+
 function closeModal(e) {
   if (e && e.target !== document.getElementById('modal-overlay')) return;
   document.getElementById('modal-overlay').classList.remove('active');
@@ -501,15 +541,11 @@ function selectOpt(opt) {
   document.getElementById('opt-hoy').classList.toggle('selected', opt==='hoy');
   document.getElementById('opt-siempre').classList.toggle('selected', opt==='siempre');
 }
-function updateConfirmBtn() {
-  const v = document.getElementById('modal-nombre').value.trim();
-  document.getElementById('modal-confirm').disabled = !v;
-}
+function updateConfirmBtn() {}
 async function confirmarAgregar() {
-  const nombre = document.getElementById('modal-nombre').value.trim();
-  if (!nombre) return;
+  if (!modalNombreSeleccionado) return;
   document.getElementById('modal-overlay').classList.remove('active');
-  await agregarNinoFirebase(modalDia, modalHora, nombre, modalOpt==='siempre');
+  await agregarNinoFirebase(modalDia, modalHora, modalNombreSeleccionado, modalOpt==='siempre');
 }
 
 // ── EXPOSE ────────────────────────────────────────────
@@ -519,6 +555,7 @@ window.setTab = setTab;
 window.changeDay = changeDay;
 window.toggleNino = toggleNino;
 window.changeExtra = changeExtra;
+window.selectNino = selectNino;
 window.openModal = openModal;
 window.closeModal = closeModal;
 window.selectOpt = selectOpt;
